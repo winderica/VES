@@ -1,0 +1,24 @@
+[package]
+name = "cl-ecdsa"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+num = "0.4"
+num-prime = "0.4.1"
+num-modular = "0.5.1"
+rand = "0.8.5"
+merlin = "3.0.0"
+secp256k1 = { version = "0.24.1", features = ["rand-std", "global-context", "bitcoin_hashes"] }
+futures = "0.3.25"
+tokio = { version = "1", features = ["full"] }
+gmp-mpfr-sys = "1.5.2"
+lazy_static = "1.2.0"
+rug = "1.17"
+rayon = "*"
+
+[profile.dev]
+opt-level = 3
+
+[profile.test]
+opt-level = 3
