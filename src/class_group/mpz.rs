@@ -5,8 +5,7 @@ use num::BigInt;
 use std::cmp::Ordering;
 use std::ffi::CString;
 use std::hash::{Hash, Hasher};
-use std::mem::uninitialized;
-use std::os::raw::{c_int, c_ulong};
+use std::mem::MaybeUninit;
 use std::slice;
 use std::str::FromStr;
 
@@ -23,9 +22,9 @@ impl Eq for Mpz {}
 impl Default for Mpz {
     fn default() -> Self {
         let inner = unsafe {
-            let mut ret = uninitialized();
-            gmp::mpz_init(&mut ret);
-            ret
+            let mut ret = MaybeUninit::uninit();
+            gmp::mpz_init(ret.as_mut_ptr());
+            ret.assume_init()
         };
         Self { inner }
     }

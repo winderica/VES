@@ -1,7 +1,7 @@
 #![feature(test)]
 extern crate test;
 
-mod cl;
+pub mod cl;
 mod class_group;
-mod jl;
+pub mod jl;
 mod ecdsa;

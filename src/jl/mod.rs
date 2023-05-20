@@ -16,23 +16,23 @@ use secp256k1::{
     PublicKey, Scalar, SecretKey, SECP256K1,
 };
 
-struct PK {
+pub struct PK {
     pub n: BigUint,
     pub y: BigUint,
     pub g: BigUint,
 }
 
-struct SK {
+pub struct SK {
     pub p: BigUint,
     pub mu: BigUint,
     pub y_to_neg_mu: BigUint,
     pub pk: PK,
 }
 
-struct JL<const B: usize>;
+pub struct JL<const B: usize>;
 
 impl<const B: usize> JL<B> {
-    fn key_gen<R: Rng + ?Sized>(mut rng: &mut R, lambda: usize) -> SK {
+    pub fn key_gen<R: Rng + ?Sized>(mut rng: &mut R, lambda: usize) -> SK {
         let (mu, p) = loop {
             let mu: BigUint = rng.gen_prime_exact(lambda / 2 - B, None);
             let p = (&mu << B) + BigUint::one();
@@ -59,21 +59,7 @@ impl<const B: usize> JL<B> {
         }
     }
 
-    fn gen_safe_prime_exact(bit_size: usize) -> BigUint {
-        let rng = &mut thread_rng();
-        loop {
-            let p = rng.gen_prime_exact(bit_size, None);
-            if is_prime(&(&p >> 1u8), None).probably() {
-                return p;
-            }
-            let p2 = (p << 1u8) + 1u8;
-            if is_prime(&p2, None).probably() {
-                return p2;
-            }
-        }
-    }
-
-    async fn key_gen_par<R: Rng + ?Sized>(mut rng: &mut R, lambda: usize) -> SK {
+    pub async fn key_gen_par<R: Rng + ?Sized>(rng: &mut R, lambda: usize) -> SK {
         let threads = available_parallelism().unwrap().get();
         let l = Arc::new(Mutex::new(None));
         join_all((0..threads).map(|_| {
@@ -131,16 +117,16 @@ impl<const B: usize> JL<B> {
         }
     }
 
-    fn encrypt<R: Rng + ?Sized>(rng: &mut R, pk: &PK, m: &BigUint) -> BigUint {
+    pub fn encrypt<R: Rng + ?Sized>(rng: &mut R, pk: &PK, m: &BigUint) -> BigUint {
         Self::encrypt_with_r(pk, m, &rng.gen_biguint_below(&pk.n))
     }
 
-    fn encrypt_with_r(pk: &PK, m: &BigUint, r: &BigUint) -> BigUint {
+    pub fn encrypt_with_r(pk: &PK, m: &BigUint, r: &BigUint) -> BigUint {
         assert!(m.bits() as usize <= B);
         (&pk.y).powm(m, &pk.n).mulm((&pk.g).powm(r, &pk.n), &pk.n)
     }
 
-    fn decrypt(sk: &SK, c: &BigUint) -> BigUint {
+    pub fn decrypt(sk: &SK, c: &BigUint) -> BigUint {
         let mut d = c.powm(&sk.mu, &sk.p);
         let mut t = sk.y_to_neg_mu.clone();
         let mut m = BigUint::zero();
@@ -155,7 +141,7 @@ impl<const B: usize> JL<B> {
         m
     }
 
-    fn prove<R: Rng + ?Sized, const K: usize>(
+    pub fn prove<R: Rng + ?Sized, const K: usize>(
         rng: &mut R,
         pk_enc: &PK,
         beta: &BigUint,
@@ -164,7 +150,8 @@ impl<const B: usize> JL<B> {
     ) -> Result<(BigUint, BigUint, BigUint), Box<dyn Error>> {
         let mut tx = Transcript::new(b"JL");
         let rho_s = rng.gen_biguint_below(&(BigUint::one() << (40 + B + K)));
-        let rho_beta = rng.gen_biguint_below(&(BigUint::one() << (pk_enc.n.bits() as usize + 40 + K)));
+        let rho_beta =
+            rng.gen_biguint_below(&(BigUint::one() << (pk_enc.n.bits() as usize + 40 + K)));
         let t1 = rr.mul_tweak(
             SECP256K1,
             &Scalar::from_le_bytes({
@@ -188,7 +175,7 @@ impl<const B: usize> JL<B> {
         Ok((x, z1, z2))
     }
 
-    fn verify<const K: usize>(
+    pub fn verify<const K: usize>(
         pk_enc: &PK,
         pk_sig: &PublicKey,
         m: &[u8],
@@ -290,7 +277,10 @@ mod tests {
         println!("{}", pi.1.bits() / 8);
         println!("{}", pi.2.bits() / 8);
         println!("{}", c.bits() / 8);
-        println!("{}", (pi.0.bits() + pi.1.bits() + pi.2.bits() + c.bits() + 256) / 8);
+        println!(
+            "{}",
+            (pi.0.bits() + pi.1.bits() + pi.2.bits() + c.bits() + 256) / 8
+        );
 
         let now = Instant::now();
         assert!(JL::<B>::verify::<K>(&sk_enc.pk, &pk_sig, &m, &c, &rr, &pi).unwrap());

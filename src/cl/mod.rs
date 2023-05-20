@@ -2,27 +2,22 @@ use std::{
     error::Error,
     f64::consts::{LOG10_2, PI},
     str::FromStr,
-    sync::{mpsc, Arc, Mutex},
+    sync::{mpsc, Arc},
     thread,
-    time::Instant,
 };
 
 use merlin::Transcript;
 use num::{
-    bigint::{RandBigInt, Sign, ToBigInt},
-    BigInt, BigUint, FromPrimitive, Integer, Num, One, Signed, Zero,
+    bigint::{RandBigInt, ToBigInt},
+    BigUint, Integer, One, Signed, Zero,
 };
 use num_modular::{ModularPow, ModularSymbols, ModularUnaryOps};
-use num_prime::{
-    nt_funcs::{is_prime, next_prime},
-    BitTest, PrimalityUtils, RandPrime,
-};
+use num_prime::{nt_funcs::next_prime, RandPrime};
 use rand::Rng;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use secp256k1::{
-    constants::CURVE_ORDER,
-    hashes::{self, sha256, Hash},
-    Context, Message, PublicKey, Scalar, Secp256k1, SecretKey, Verification, SECP256K1,
+    hashes::{sha256, Hash},
+    PublicKey, Scalar, SecretKey, SECP256K1,
 };
 
 use crate::class_group::{mpz::Mpz, ClassCtx, ClassElem};
@@ -97,7 +92,7 @@ pub fn log_f(ctx: &mut ClassCtx, p: &BigUint, c: &ClassElem) -> BigUint {
     }
 }
 
-struct CL {
+pub struct CL {
     q: BigUint,
     delta_q: ClassCtx,
     g_q_powers: Arc<Vec<Vec<ClassElem>>>,
@@ -105,7 +100,7 @@ struct CL {
 }
 
 impl CL {
-    fn group_gen<R: Rng + ?Sized>(
+    pub fn group_gen<R: Rng + ?Sized>(
         mut rng: &mut R,
         lambda: usize,
         q: &BigUint,
@@ -130,7 +125,7 @@ impl CL {
         (delta_k, delta_q)
     }
 
-    fn param_gen(delta_k: &mut ClassCtx, mut delta_q: ClassCtx, q: &BigUint) -> Self {
+    pub fn param_gen(delta_k: &mut ClassCtx, mut delta_q: ClassCtx, q: &BigUint) -> Self {
         let abs_delta_k = delta_k.D.to_bigint().abs().to_biguint().unwrap();
         let s_tilde = {
             let sqrt_delta_k = {
@@ -215,7 +210,7 @@ impl CL {
         }
     }
 
-    fn key_gen<R: Rng + ?Sized>(&mut self, rng: &mut R) -> (BigUint, Vec<Vec<ClassElem>>) {
+    pub fn key_gen<R: Rng + ?Sized>(&mut self, rng: &mut R) -> (BigUint, Vec<Vec<ClassElem>>) {
         let sk = rng.gen_biguint_below(&(&self.s_tilde << 40u8));
         let pk = self.delta_q.pow_precomputed(&self.g_q_powers, &sk);
 
@@ -253,7 +248,7 @@ impl CL {
         (sk, pk_powers)
     }
 
-    fn encrypt<R: Rng + ?Sized>(
+    pub fn encrypt<R: Rng + ?Sized>(
         &mut self,
         rng: &mut R,
         pk: Arc<Vec<Vec<ClassElem>>>,
@@ -263,7 +258,7 @@ impl CL {
         self.encrypt_with_r(pk, m, &r)
     }
 
-    fn encrypt_with_r(
+    pub fn encrypt_with_r(
         &mut self,
         pk: Arc<Vec<Vec<ClassElem>>>,
         m: &BigUint,
@@ -286,13 +281,13 @@ impl CL {
         )
     }
 
-    fn decrypt(&mut self, sk: &BigUint, c: &(ClassElem, ClassElem)) -> BigUint {
+    pub fn decrypt(&mut self, sk: &BigUint, c: &(ClassElem, ClassElem)) -> BigUint {
         let tmp = self.delta_q.pow(&c.0, sk);
         let tmp = self.delta_q.op(&ClassCtx::inv(&tmp), &c.1);
         log_f(&mut self.delta_q, &self.q, &tmp)
     }
 
-    fn prove<R: Rng + ?Sized>(
+    pub fn prove<R: Rng + ?Sized>(
         &mut self,
         rng: &mut R,
         pk_enc: Arc<Vec<Vec<ClassElem>>>,
@@ -339,7 +334,7 @@ impl CL {
         Ok((x, z1, z2))
     }
 
-    fn verify(
+    pub fn verify(
         &mut self,
         pk_enc: Arc<Vec<Vec<ClassElem>>>,
         pk_sig: &PublicKey,
@@ -432,6 +427,7 @@ mod tests {
     use std::time::Instant;
 
     use rand::thread_rng;
+    use secp256k1::constants::CURVE_ORDER;
 
     use crate::ecdsa::sign;
 
@@ -481,7 +477,18 @@ mod tests {
         println!("{:?}", now.elapsed());
 
         println!("{}", pi.0.bits());
-        println!("{}", (pi.0.bits() + 256 + pi.2.bits() + (c.0.a.bit_length() + c.0.b.bit_length() + c.1.a.bit_length() + c.1.b.bit_length()) as u64 + 256) / 8);
+        println!(
+            "{}",
+            (pi.0.bits()
+                + 256
+                + pi.2.bits()
+                + (c.0.a.bit_length()
+                    + c.0.b.bit_length()
+                    + c.1.a.bit_length()
+                    + c.1.b.bit_length()) as u64
+                + 256)
+                / 8
+        );
 
         let now = Instant::now();
         assert!(p.verify(pk_enc.clone(), &pk_sig, &m, &c, &rr, &pi).unwrap());

@@ -8,7 +8,7 @@ use gmp_mpfr_sys::gmp;
 use mpz::Mpz;
 
 use lin_congruence_ctx::LinCongruenceCtx;
-use num::{BigUint, Integer, Zero, ToPrimitive};
+use num::{BigUint, ToPrimitive, Zero};
 use num_prime::BitTest;
 
 #[derive(Clone)]
@@ -144,8 +144,6 @@ impl Eq for ClassElem {}
 unsafe impl Send for ClassElem {}
 unsafe impl Sync for ClassElem {}
 
-use std::{cell::RefCell, str::FromStr};
-
 const EXP_THRESH: usize = 31;
 const THRESH: i64 = ((1 as u64) << 31) as i64;
 
@@ -222,13 +220,13 @@ impl ClassCtx {
                 bx_sq_op,
                 by_sq_op,
                 dx_sq_op,
-                q_sq_op,
+                _,
                 t_sq_op,
                 ax_sq_op,
                 ay_sq_op,
                 Q1_sq_op,
                 x_sq_op,
-                z_sq_op,
+                _,
                 dy_sq_op,
                 _,
             ) = &mut self.op_ctx.inner;
@@ -310,7 +308,7 @@ impl ClassCtx {
     #[inline]
     fn reduce(&mut self, elem: &mut ClassElem) {
         let (
-            x,
+            _,
             s,
             ra,
             rb,

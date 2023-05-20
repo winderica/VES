@@ -3,7 +3,7 @@ use std::error::Error;
 use num::{BigUint, bigint::RandBigInt};
 use num_modular::ModularUnaryOps;
 use rand::Rng;
-use secp256k1::{SecretKey, PublicKey, constants::CURVE_ORDER, Scalar, SECP256K1, hashes::{sha256, Hash}, Message};
+use secp256k1::{SecretKey, PublicKey, constants::CURVE_ORDER, Scalar, SECP256K1, hashes::{sha256, Hash}};
 
 pub fn sign<R: Rng + ?Sized>(
     rng: &mut R,
