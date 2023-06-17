@@ -9,7 +9,12 @@ num-prime = "0.4.1"
 num-modular = "0.5.1"
 rand = "0.8.5"
 merlin = "3.0.0"
-secp256k1 = { version = "0.24.1", features = ["rand-std", "global-context", "bitcoin_hashes"] }
+ark-secp256k1 = { version = "0.4.0" }
+ark-serialize = { version = "0.4.0" }
+ark-std = { version = "0.4.0" }
+ark-ff = { version = "0.4.0" }
+ark-ec = { version = "0.4.0" }
+sha2 = "0.10.6"
 futures = "0.3.25"
 tokio = { version = "1", features = ["full"] }
 gmp-mpfr-sys = "1.5.2"

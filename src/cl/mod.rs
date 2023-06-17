@@ -6,6 +6,9 @@ use std::{
     thread,
 };
 
+use ark_secp256k1::{Fr, Projective};
+use ark_serialize::CanonicalSerialize;
+use ark_std::UniformRand;
 use merlin::Transcript;
 use num::{
     bigint::{RandBigInt, ToBigInt},
@@ -15,12 +18,11 @@ use num_modular::{ModularPow, ModularSymbols, ModularUnaryOps};
 use num_prime::{nt_funcs::next_prime, RandPrime};
 use rand::Rng;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
-use secp256k1::{
-    hashes::{sha256, Hash},
-    PublicKey, Scalar, SecretKey, SECP256K1,
-};
 
-use crate::class_group::{mpz::Mpz, ClassCtx, ClassElem};
+use crate::{
+    class_group::{mpz::Mpz, ClassCtx, ClassElem},
+    signatures::Signature,
+};
 
 fn tonelli_shanks(a: &BigUint, p: &BigUint) -> Option<BigUint> {
     let mut q = p - BigUint::one();
@@ -292,13 +294,13 @@ impl CL {
         rng: &mut R,
         pk_enc: Arc<Vec<Vec<ClassElem>>>,
         beta: &BigUint,
-        s: &SecretKey,
-        rr: &PublicKey,
-    ) -> Result<(BigUint, SecretKey, BigUint), Box<dyn Error>> {
+        sig2: &Fr,
+        b: &Projective,
+    ) -> Result<(BigUint, Fr, BigUint), Box<dyn Error>> {
         let (s1, r1) = mpsc::channel();
         let mut tx = Transcript::new(b"CL");
-        let rho_s = SecretKey::new(rng);
-        let rho_s_bn = BigUint::from_bytes_be(&rho_s.secret_bytes());
+        let rho_s = Fr::rand(rng);
+        let rho_s_bn = rho_s.into();
         let rho_beta = rng.gen_biguint_below(&(&self.s_tilde << 160u8));
         {
             let tmp1 = exp_f(&mut self.delta_q, &self.q, &rho_s_bn);
@@ -310,10 +312,14 @@ impl CL {
                 s1.send(delta_q.op(&tmp1, &tmp2)).unwrap();
             });
         }
-        let t1 = rr.mul_tweak(SECP256K1, &rho_s.into())?;
+        let t1 = *b * rho_s;
         let t2 = self.delta_q.pow_precomputed(&self.g_q_powers, &rho_beta);
         let t3 = r1.recv().unwrap();
-        tx.append_message(b"t1", &t1.serialize());
+        tx.append_message(b"t1", &{
+            let mut r = vec![];
+            t1.serialize_uncompressed(&mut r)?;
+            r
+        });
         tx.append_message(b"t2", &t2.to_bytes());
         tx.append_message(b"t3", &t3.to_bytes());
         let x = {
@@ -321,27 +327,20 @@ impl CL {
             tx.challenge_bytes(b"x", &mut x);
             BigUint::from_bytes_le(&x)
         };
-        let z1 = rho_s.add_tweak(
-            &s.mul_tweak(&Scalar::from_le_bytes({
-                let mut x = x.to_bytes_le();
-                x.resize(32, 0);
-                x.try_into().unwrap()
-            })?)?
-            .into(),
-        )?;
+        let z1 = rho_s + sig2 * &Fr::from(x.clone());
         let z2 = rho_beta + &x * beta;
 
         Ok((x, z1, z2))
     }
 
-    pub fn verify(
+    pub fn verify<S: Signature>(
         &mut self,
         pk_enc: Arc<Vec<Vec<ClassElem>>>,
-        pk_sig: &PublicKey,
+        pk_sig: &Projective,
         m: &[u8],
         c: &(ClassElem, ClassElem),
-        rr: &PublicKey,
-        z: &(BigUint, SecretKey, BigUint),
+        sig1: &Projective,
+        z: &(BigUint, Fr, BigUint),
     ) -> Result<bool, Box<dyn Error>> {
         let (s1, r1) = mpsc::channel();
         let (s2, r2) = mpsc::channel();
@@ -375,11 +374,7 @@ impl CL {
             });
         }
         {
-            let tmp1 = exp_f(
-                &mut self.delta_q,
-                &self.q,
-                &BigUint::from_bytes_be(&z.1.secret_bytes()),
-            );
+            let tmp1 = exp_f(&mut self.delta_q, &self.q, &z.1.into());
             let mut delta_q = self.delta_q.clone();
             let z2 = z.2.clone();
             thread::spawn(move || {
@@ -387,30 +382,16 @@ impl CL {
                 s2.send(delta_q.op(&tmp1, &tmp2)).unwrap();
             });
         }
-        let t1 = pk_sig
-            .mul_tweak(
-                SECP256K1,
-                &Scalar::from_be_bytes(rr.x_only_public_key().0.serialize())?,
-            )?
-            .add_exp_tweak(
-                SECP256K1,
-                &Scalar::from_be_bytes(sha256::Hash::hash(&m).into_inner())?,
-            )?
-            .mul_tweak(
-                SECP256K1,
-                &SecretKey::from_slice(&{
-                    let mut x = z.0.to_bytes_le();
-                    x.resize(32, 0);
-                    x.reverse();
-                    x
-                })?
-                .negate()
-                .into(),
-            )?
-            .combine(&rr.mul_tweak(SECP256K1, &z.1.into())?)?;
+        let a = S::compute_a(pk_sig, m, sig1)?;
+        let b = S::compute_b(pk_sig, m, sig1)?;
+        let t1 = b * z.1 - a * Fr::from(z.0.clone());
         let t2 = self.delta_q.op(&r1.recv().unwrap(), &r1.recv().unwrap());
         let t3 = self.delta_q.op(&r2.recv().unwrap(), &r2.recv().unwrap());
-        tx.append_message(b"t1", &t1.serialize());
+        tx.append_message(b"t1", &{
+            let mut r = vec![];
+            t1.serialize_uncompressed(&mut r)?;
+            r
+        });
         tx.append_message(b"t2", &t2.to_bytes());
         tx.append_message(b"t3", &t3.to_bytes());
         let x = {
@@ -426,10 +407,11 @@ impl CL {
 mod tests {
     use std::time::Instant;
 
+    use ark_ec::Group;
+    use ark_ff::PrimeField;
     use rand::thread_rng;
-    use secp256k1::constants::CURVE_ORDER;
 
-    use crate::ecdsa::sign;
+    use crate::signatures::{ecdsa::ECDSA, schnorr::Schnorr};
 
     use super::*;
 
@@ -445,17 +427,16 @@ mod tests {
         assert_eq!(p.decrypt(&sk, &c), m);
     }
 
-    #[test]
-    fn test_zk() {
+    fn test_zk<S: Signature>() {
         let rng = &mut thread_rng();
         let m = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-        let sk_sig = SecretKey::new(rng);
-        let pk_sig = sk_sig.public_key(SECP256K1);
+        let sk_sig = Fr::rand(rng);
+        let pk_sig = Projective::generator() * sk_sig;
         let now = Instant::now();
-        let (rr, s) = sign(rng, &sk_sig, &m).unwrap();
+        let (r, s) = S::sign(rng, &sk_sig, &m).unwrap();
         println!("{:?}", now.elapsed());
 
-        let q = BigUint::from_bytes_be(&CURVE_ORDER);
+        let q = Fr::MODULUS.into();
         let (mut g_k, g_q) = CL::group_gen(rng, 1827, &q);
         let mut p = CL::param_gen(&mut g_k, g_q, &q);
         let (_, pk_enc) = p.key_gen(rng);
@@ -465,15 +446,13 @@ mod tests {
         let pk_enc = Arc::new(pk_enc);
 
         let now = Instant::now();
-        let c = p.encrypt_with_r(
-            pk_enc.clone(),
-            &BigUint::from_bytes_be(&s.secret_bytes()),
-            &beta,
-        );
+        let c = p.encrypt_with_r(pk_enc.clone(), &s.into(), &beta);
         println!("{:?}", now.elapsed());
 
+        let b = S::compute_b(&pk_sig, &m, &r).unwrap();
+
         let now = Instant::now();
-        let pi = p.prove(rng, pk_enc.clone(), &beta, &s, &rr).unwrap();
+        let pi = p.prove(rng, pk_enc.clone(), &beta, &s, &b).unwrap();
         println!("{:?}", now.elapsed());
 
         println!("{}", pi.0.bits());
@@ -491,17 +470,29 @@ mod tests {
         );
 
         let now = Instant::now();
-        assert!(p.verify(pk_enc.clone(), &pk_sig, &m, &c, &rr, &pi).unwrap());
+        assert!(p
+            .verify::<S>(pk_enc.clone(), &pk_sig, &m, &c, &r, &pi)
+            .unwrap());
         println!("{:?}", now.elapsed());
     }
 
-    #[bench]
-    fn bench_prove(b: &mut test::Bencher) {
+    #[test]
+    fn test_zk_ecdsa() {
+        test_zk::<ECDSA>()
+    }
+
+    #[test]
+    fn test_zk_schnorr() {
+        test_zk::<Schnorr>()
+    }
+
+    fn bench_prove<S: Signature>(bencher: &mut test::Bencher) {
         let rng = &mut thread_rng();
         let m = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-        let sk_sig = SecretKey::new(rng);
+        let sk_sig = Fr::rand(rng);
+        let pk_sig = Projective::generator() * sk_sig;
 
-        let q = BigUint::from_bytes_be(&CURVE_ORDER);
+        let q = Fr::MODULUS.into();
         let (mut g_k, g_q) = CL::group_gen(rng, 1827, &q);
         let mut p = CL::param_gen(&mut g_k, g_q, &q);
         let (_, pk_enc) = p.key_gen(rng);
@@ -509,41 +500,57 @@ mod tests {
 
         let pk_enc = Arc::new(pk_enc);
 
-        b.iter(|| {
-            let (rr, s) = sign(rng, &sk_sig, &m).unwrap();
-            p.encrypt_with_r(
-                pk_enc.clone(),
-                &BigUint::from_bytes_be(&s.secret_bytes()),
-                &beta,
-            );
-            p.prove(rng, pk_enc.clone(), &beta, &s, &rr).unwrap()
+        bencher.iter(|| {
+            let (r, s) = S::sign(rng, &sk_sig, &m).unwrap();
+            let b = S::compute_b(&pk_sig, &m, &r).unwrap();
+            p.encrypt_with_r(pk_enc.clone(), &s.into(), &beta);
+            p.prove(rng, pk_enc.clone(), &beta, &s, &b).unwrap()
+        });
+    }
+
+    fn bench_verify<S: Signature>(bencher: &mut test::Bencher) {
+        let rng = &mut thread_rng();
+        let m = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let sk_sig = Fr::rand(rng);
+        let pk_sig = Projective::generator() * sk_sig;
+        let (r, s) = ECDSA::sign(rng, &sk_sig, &m).unwrap();
+
+        let b = S::compute_b(&pk_sig, &m, &r).unwrap();
+
+        let q = Fr::MODULUS.into();
+        let (mut g_k, g_q) = CL::group_gen(rng, 1827, &q);
+        let mut p = CL::param_gen(&mut g_k, g_q, &q);
+        let (_, pk_enc) = p.key_gen(rng);
+        let beta = rng.gen_biguint_below(&(&p.s_tilde << 40u8));
+
+        let pk_enc = Arc::new(pk_enc);
+
+        let c = p.encrypt_with_r(pk_enc.clone(), &s.into(), &beta);
+
+        let pi = p.prove(rng, pk_enc.clone(), &beta, &s, &b).unwrap();
+
+        bencher.iter(|| {
+            p.verify::<ECDSA>(pk_enc.clone(), &pk_sig, &m, &c, &r, &pi)
+                .unwrap()
         });
     }
 
     #[bench]
-    fn bench_verify(b: &mut test::Bencher) {
-        let rng = &mut thread_rng();
-        let m = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-        let sk_sig = SecretKey::new(rng);
-        let pk_sig = sk_sig.public_key(SECP256K1);
-        let (rr, s) = sign(rng, &sk_sig, &m).unwrap();
+    fn bench_prove_ecdsa(b: &mut test::Bencher) {
+        bench_prove::<ECDSA>(b)
+    }
+    #[bench]
+    fn bench_prove_schnorr(b: &mut test::Bencher) {
+        bench_prove::<Schnorr>(b)
+    }
 
-        let q = BigUint::from_bytes_be(&CURVE_ORDER);
-        let (mut g_k, g_q) = CL::group_gen(rng, 1827, &q);
-        let mut p = CL::param_gen(&mut g_k, g_q, &q);
-        let (_, pk_enc) = p.key_gen(rng);
-        let beta = rng.gen_biguint_below(&(&p.s_tilde << 40u8));
+    #[bench]
+    fn bench_verify_ecdsa(b: &mut test::Bencher) {
+        bench_verify::<ECDSA>(b)
+    }
 
-        let pk_enc = Arc::new(pk_enc);
-
-        let c = p.encrypt_with_r(
-            pk_enc.clone(),
-            &BigUint::from_bytes_be(&s.secret_bytes()),
-            &beta,
-        );
-
-        let pi = p.prove(rng, pk_enc.clone(), &beta, &s, &rr).unwrap();
-
-        b.iter(|| p.verify(pk_enc.clone(), &pk_sig, &m, &c, &rr, &pi).unwrap());
+    #[bench]
+    fn bench_verify_schnorr(b: &mut test::Bencher) {
+        bench_verify::<Schnorr>(b)
     }
 }
